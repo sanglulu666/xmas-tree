@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <title>交互式粉色粒子圣诞树</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; }
+        canvas { display: block; }
+        #video-container {
+            position: absolute;
+            bottom: 10px;
+            right: 10px;
+            width: 200px;
+            height: 150px;
+            border: 2px solid rgba(255, 105, 180, 0.5);
+            border-radius: 8px;
+            transform: scaleX(-1); /* 镜像显示 */
+        }
+        #loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: #ff69b4;
+            font-family: 'Arial', sans-serif;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+
+<div id="loading">正在初始化相机和粒子系统...<br>请确保摄像头已开启</div>
+<video id="video-container" autoplay playsinline></video>
+
+<!-- 引入 Three.js 和 MediaPipe -->
+<script src="https://cdn.jsdelivr.net/npm/three@0.152.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+
+<script>
+/**
+ * 配置与变量
+ */
+let scene, camera, renderer, treeParticles, heartParticles, ringParticles, ambientParticles;
+let handTracker;
+let isHandOpen = false;
+let interactionFactor = 0; // 0: 树形, 1: 散开
+const PARTICLE_COUNT = 8000;
+const HEART_COUNT = 1000;
+const RING_COUNT = 2000;
+
+// 粒子原始位置存储
+let treeTargets = [], heartTargets = [], ringTargets = [];
+let treePositions, heartPositions, ringPositions;
+
+/**
+ * 初始化场景
+ */
+function initScene() {
+    scene = new THREE.Scene();
+    camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+    camera.position.set(0, 15, 40);
+    camera.lookAt(0, 10, 0);
+
+    renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(window.devicePixelRatio);
+    document.body.appendChild(renderer.domElement);
+
+    createTree();
+    createHeart();
+    createRings();
+    createAmbientParticles();
+
+    window.addEventListener('resize', onWindowResize);
+}
+
+/**
+ * 创建粉色粒子圣诞树
+ */
+function createTree() {
+    const geo = new THREE.BufferGeometry();
+    const pos = new Float32Array(PARTICLE_COUNT * 3);
+    const colors = new Float32Array(PARTICLE_COUNT * 3);
+    
+    for (let i = 0; i < PARTICLE_COUNT; i++) {
+        // 模拟树的形状：圆锥体 + 随机扰动
+        const height = Math.random() * 25;
+        const radius = (25 - height) * 0.4 * Math.random();
+        const angle = Math.random() * Math.PI * 2;
+
+        const x = Math.cos(angle) * radius;
+        const y = height;
+        const z = Math.sin(angle) * radius;
+
+        treeTargets.push(new THREE.Vector3(x, y, z));
+        
+        pos[i * 3] = x;
+        pos[i * 3 + 1] = y;
+        pos[i * 3 + 2] = z;
+
+        // 粉色调
+        colors[i * 3] = 1; // R
+        colors[i * 3 + 1] = 0.4 + Math.random() * 0.3; // G
+        colors[i * 3 + 2] = 0.7 + Math.random() * 0.3; // B
+    }
+
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    
+    const mat = new THREE.PointsMaterial({
+        size: 0.15,
+        vertexColors: true,
+        transparent: true,
+        blending: THREE.AdditiveBlending
+    });
+
+    treeParticles = new THREE.Points(geo, mat);
+    treePositions = geo.attributes.position;
+    scene.add(treeParticles);
+}
+
+/**
+ * 创建树顶粉色爱心
+ */
+function createHeart() {
+    const geo = new THREE.BufferGeometry();
+    const pos = new Float32Array(HEART_COUNT * 3);
+    
+    for (let i = 0; i < HEART_COUNT; i++) {
+        const t = Math.random() * Math.PI * 2;
+        // 3D 爱心公式
+        const x = 1.5 * (16 * Math.pow(Math.sin(t), 3)) / 16;
+        const y = 1.5 * (13 * Math.cos(t) - 5 * Math.cos(2 * t) - 2 * Math.cos(3 * t) - Math.cos(4 * t)) / 16;
+        const z = (Math.random() - 0.5) * 0.5;
+
+        const targetPos = new THREE.Vector3(x, y + 26, z);
+        heartTargets.push(targetPos);
+        
+        pos[i * 3] = targetPos.x;
+        pos[i * 3 + 1] = targetPos.y;
+        pos[i * 3 + 2] = targetPos.z;
+    }
+
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    const mat = new THREE.PointsMaterial({ color: 0xff69b4, size: 0.2, blending: THREE.AdditiveBlending });
+    heartParticles = new THREE.Points(geo, mat);
+    heartPositions = geo.attributes.position;
+    scene.add(heartParticles);
+}
+
+/**
+ * 创建地面白色旋转环
+ */
+function createRings() {
+    const geo = new THREE.BufferGeometry();
+    const pos = new Float32Array(RING_COUNT * 3);
+    
+    for (let i = 0; i < RING_COUNT; i++) {
+        const ringIndex = Math.floor(Math.random() * 3) + 1;
+        const radius = ringIndex * 4 + Math.random() * 0.5;
+        const angle = Math.random() * Math.PI * 2;
+
+        const x = Math.cos(angle) * radius;
+        const y = 0;
+        const z = Math.sin(angle) * radius;
+
+        ringTargets.push({ pos: new THREE.Vector3(x, y, z), radius, angle });
+        pos[i * 3] = x;
+        pos[i * 3 + 1] = y;
+        pos[i * 3 + 2] = z;
+    }
+
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    const mat = new THREE.PointsMaterial({ color: 0xffffff, size: 0.1, transparent: true, opacity: 0.6 });
+    ringParticles = new THREE.Points(geo, mat);
+    ringPositions = geo.attributes.position;
+    scene.add(ringParticles);
+}
+
+/**
+ * 环境白色发光粒子
+ */
+function createAmbientParticles() {
+    const geo = new THREE.BufferGeometry();
+    const pos = new Float32Array(500 * 3);
+    for (let i = 0; i < 500 * 3; i++) pos[i] = (Math.random() - 0.5) * 100;
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    const mat = new THREE.PointsMaterial({ color: 0xffffff, size: 0.05, transparent: true, opacity: 0.3 });
+    ambientParticles = new THREE.Points(geo, mat);
+    scene.add(ambientParticles);
+}
+
+/**
+ * 手势识别初始化
+ */
+function initHandTracking() {
+    const videoElement = document.getElementById('video-container');
+    handTracker = new Hands({
+        locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+    });
+
+    handTracker.setOptions({
+        maxNumHands: 1,
+        modelComplexity: 1,
+        minDetectionConfidence: 0.5,
+        minTrackingConfidence: 0.5
+    });
+
+    handTracker.onResults(onHandResults);
+
+    const cameraTracker = new Camera(videoElement, {
+        onFrame: async () => {
+            await handTracker.send({ image: videoElement });
+        },
+        width: 640,
+        height: 480
+    });
+    cameraTracker.start();
+    document.getElementById('loading').style.display = 'none';
+}
+
+function onHandResults(results) {
+    if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+        const landmarks = results.multiHandLandmarks[0];
+        // 判断手掌张开：计算食指尖和手掌根部的距离
+        const d = Math.hypot(landmarks[8].x - landmarks[0].x, landmarks[8].y - landmarks[0].y);
+        isHandOpen = d > 0.4; 
+    } else {
+        isHandOpen = false; // 无手时自动汇聚
+    }
+}
+
+/**
+ * 动画循环
+ */
+function animate() {
+    requestAnimationFrame(animate);
+
+    // 平滑过渡交互因子
+    const targetFactor = isHandOpen ? 1.0 : 0.0;
+    interactionFactor += (targetFactor - interactionFactor) * 0.05;
+
+    const time = Date.now() * 0.001;
+
+    // 更新树粒子
+    for (let i = 0; i < PARTICLE_COUNT; i++) {
+        const target = treeTargets[i];
+        const noiseX = Math.sin(time + i) * 10 * interactionFactor;
+        const noiseY = Math.cos(time + i) * 10 * interactionFactor;
+        
+        treePositions.array[i * 3] = target.x + noiseX;
+        treePositions.array[i * 3 + 1] = target.y + noiseY;
+        treePositions.array[i * 3 + 2] = target.z + (Math.random() - 0.5) * 5 * interactionFactor;
+    }
+    treePositions.needsUpdate = true;
+
+    // 更新爱心粒子
+    for (let i = 0; i < HEART_COUNT; i++) {
+        const target = heartTargets[i];
+        heartPositions.array[i * 3] = target.x + (Math.random() - 0.5) * 15 * interactionFactor;
+        heartPositions.array[i * 3 + 1] = target.y + (Math.random() - 0.5) * 15 * interactionFactor;
+        heartPositions.array[i * 3 + 2] = target.z + (Math.random() - 0.5) * 15 * interactionFactor;
+    }
+    heartPositions.needsUpdate = true;
+
+    // 更新地面环 (旋转 + 散开)
+    for (let i = 0; i < RING_COUNT; i++) {
+        const data = ringTargets[i];
+        data.angle += 0.01; // 缓慢旋转
+        const curX = Math.cos(data.angle) * (data.radius + interactionFactor * 20);
+        const curZ = Math.sin(data.angle) * (data.radius + interactionFactor * 20);
+        
+        ringPositions.array[i * 3] = curX;
+        ringPositions.array[i * 3 + 1] = (Math.random() - 0.5) * 2 * interactionFactor;
+        ringPositions.array[i * 3 + 2] = curZ;
+    }
+    ringPositions.needsUpdate = true;
+
+    // 整体旋转
+    treeParticles.rotation.y += 0.002;
+    heartParticles.rotation.y += 0.002;
+    ambientParticles.rotation.y += 0.001;
+
+    renderer.render(scene, camera);
+}
+
+function onWindowResize() {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+}
+
+// 启动
+initScene();
+initHandTracking();
+animate();
+
+</script>
+</body>
+</html>
