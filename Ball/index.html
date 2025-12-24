@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>发光粒子羽毛球 - 交互版</title>
+    <style>
+        body { margin: 0; background-color: #000; overflow: hidden; font-family: sans-serif; }
+        canvas { display: block; }
+        
+        /* 提示信息 */
+        #info-ui {
+            position: absolute; top: 20px; left: 20px; color: white;
+            z-index: 10; pointer-events: none;
+        }
+        .status-tag { background: rgba(255,255,255,0.1); padding: 5px 10px; border-radius: 4px; font-size: 12px; }
+
+        /* 摄像头预览窗 */
+        #video-container {
+            position: absolute; bottom: 20px; right: 20px; width: 120px; height: 90px;
+            border: 2px solid #444; border-radius: 8px; transform: scaleX(-1); z-index: 5;
+        }
+
+        /* 强制显示按钮（解决部分浏览器不自动播放问题） */
+        #start-hint {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            color: white; text-align: center; z-index: 20; background: rgba(0,0,0,0.8);
+            padding: 20px; border-radius: 15px; border: 1px solid #fff; cursor: pointer;
+        }
+    </style>
+</head>
+<body>
+
+<div id="info-ui">
+    <h2>发光粒子羽毛球</h2>
+    <div id="cam-status" class="status-tag">正在尝试启动摄像头...</div>
+    <p style="font-size: 14px; opacity: 0.7;">手张开：粒子散开 | 手握拳：粒子汇聚</p>
+</div>
+
+<div id="start-hint" onclick="this.style.display='none'">
+    <p>点击屏幕开始体验</p>
+    <p style="font-size: 12px;">(如果看不到羽毛球，请刷新页面)</p>
+</div>
+
+<video id="video-container" autoplay playsinline></video>
+
+<!-- 引入 Three.js -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/0.152.0/three.min.js"></script>
+<!-- 引入 MediaPipe -->
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+
+<script>
+/**
+ * 1. 基础场景设置
+ */
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+camera.position.set(0, 10, 40);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(window.devicePixelRatio);
+document.body.appendChild(renderer.domElement);
+
+/**
+ * 2. 粒子羽毛球构造
+ */
+let shuttlecock, ringPoints;
+let interactionFactor = 0; // 0 = 羽毛球, 1 = 散开
+let isHandOpen = false;
+const particlesData = [];
+const ringData = [];
+
+function createShuttlecock() {
+    const count = 12000;
+    const geometry = new THREE.BufferGeometry();
+    const positions = new Float32Array(count * 3);
+    
+    for (let i = 0; i < count; i++) {
+        let x, y, z;
+        
+        if (i < 3000) { 
+            // --- 球头部分 (半球体) ---
+            const phi = Math.acos(Math.random()); 
+            const theta = Math.random() * Math.PI * 2;
+            const r = 2.8;
+            x = r * Math.sin(phi) * Math.cos(theta);
+            y = -r * Math.cos(phi);
+            z = r * Math.sin(phi) * Math.sin(theta);
+        } else {
+            // --- 羽毛部分 (16根羽毛) ---
+            const featherIndex = i % 16;
+            const angle = (featherIndex / 16) * Math.PI * 2;
+            const h = Math.random() * 14; // 羽毛长度
+            const r = 2.8 + h * 0.35; // 向上张开的斜率
+            const spread = (Math.random() - 0.5) * (h * 0.2); // 羽毛宽度
+            
+            x = Math.cos(angle) * r + Math.cos(angle + 1.5) * spread;
+            y = h;
+            z = Math.sin(angle) * r + Math.sin(angle + 1.5) * spread;
+        }
+
+        // 初始位置
+        positions[i * 3] = x;
+        positions[i * 3 + 1] = y;
+        positions[i * 3 + 2] = z;
+
+        // 存储数据用于交互
+        particlesData.push({
+            origin: new THREE.Vector3(x, y, z),
+            scatter: new THREE.Vector3(
+                (Math.random() - 0.5) * 150,
+                (Math.random() - 0.5) * 100,
+                (Math.random() - 0.5) * 100
+            )
+        });
+    }
+
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    const material = new THREE.PointsMaterial({
+        color: 0xffffff,
+        size: 0.15,
+        transparent: true,
+        opacity: 0.8,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false
+    });
+
+    shuttlecock = new THREE.Points(geometry, material);
+    // 调整角度：球头斜向下
+    shuttlecock.rotation.x = 0.6;
+    shuttlecock.rotation.z = 0.2;
+    scene.add(shuttlecock);
+}
+
+function createGroundRings() {
+    const count = 3000;
+    const geometry = new THREE.BufferGeometry();
+    const positions = new Float32Array(count * 3);
+
+    for (let i = 0; i < count; i++) {
+        const r = 10 + Math.random() * 6;
+        const a = Math.random() * Math.PI * 2;
+        const x = Math.cos(a) * r;
+        const z = Math.sin(a) * r;
+        const y = -8;
+
+        positions[i * 3] = x;
+        positions[i * 3 + 1] = y;
+        positions[i * 3 + 2] = z;
+
+        ringData.push({
+            angle: a,
+            radius: r,
+            y: y,
+            scatter: new THREE.Vector3(x * 6, y, z * 6)
+        });
+    }
+
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    const material = new THREE.PointsMaterial({
+        color: 0xffffff,
+        size: 0.1,
+        transparent: true,
+        opacity: 0.4
+    });
+    ringPoints = new THREE.Points(geometry, material);
+    scene.add(ringPoints);
+}
+
+/**
+ * 3. 手势识别逻辑
+ */
+async function setupHands() {
+    const videoElement = document.getElementById('video-container');
+    const statusEl = document.getElementById('cam-status');
+
+    const hands = new Hands({
+        locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+    });
+
+    hands.setOptions({
+        maxNumHands: 1,
+        modelComplexity: 1,
+        minDetectionConfidence: 0.5,
+        minTrackingConfidence: 0.5
+    });
+
+    hands.onResults((results) => {
+        if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+            const lm = results.multiHandLandmarks[0];
+            // 计算食指尖(8)到手掌根(0)的距离
+            const dist = Math.hypot(lm[8].x - lm[0].x, lm[8].y - lm[0].y);
+            isHandOpen = dist > 0.35;
+            statusEl.innerText = isHandOpen ? "手势：张开 (散开)" : "手势：闭合 (汇聚)";
+            statusEl.style.color = "#00ff00";
+        } else {
+            isHandOpen = false;
+            statusEl.innerText = "未检测到手势";
+            statusEl.style.color = "#fff";
+        }
+    });
+
+    const cameraHelper = new Camera(videoElement, {
+        onFrame: async () => { await hands.send({ image: videoElement }); },
+        width: 640, height: 480
+    });
+
+    try {
+        await cameraHelper.start();
+    } catch (err) {
+        statusEl.innerText = "摄像头启动失败 (需HTTPS)";
+        statusEl.style.color = "#ff4444";
+    }
+}
+
+/**
+ * 4. 动画循环
+ */
+function animate() {
+    requestAnimationFrame(animate);
+
+    // 平滑过渡
+    const target = isHandOpen ? 1.0 : 0.0;
+    interactionFactor += (target - interactionFactor) * 0.1;
+
+    // 更新羽毛球粒子
+    const positions = shuttlecock.geometry.attributes.position.array;
+    for (let i = 0; i < particlesData.length; i++) {
+        const p = particlesData[i];
+        positions[i * 3] = THREE.MathUtils.lerp(p.origin.x, p.scatter.x, interactionFactor);
+        positions[i * 3 + 1] = THREE.MathUtils.lerp(p.origin.y, p.scatter.y, interactionFactor);
+        positions[i * 3 + 2] = THREE.MathUtils.lerp(p.origin.z, p.scatter.z, interactionFactor);
+    }
+    shuttlecock.geometry.attributes.position.needsUpdate = true;
+
+    // 更新地面环
+    const rPos = ringPoints.geometry.attributes.position.array;
+    for (let i = 0; i < ringData.length; i++) {
+        const r = ringData[i];
+        r.angle += 0.005; // 旋转
+        const curR = r.radius + interactionFactor * 50;
+        rPos[i * 3] = Math.cos(r.angle) * curR;
+        rPos[i * 3 + 1] = r.y - interactionFactor * 20;
+        rPos[i * 3 + 2] = Math.sin(r.angle) * curR;
+    }
+    ringPoints.geometry.attributes.position.needsUpdate = true;
+
+    // 自动旋转
+    if (interactionFactor < 0.1) {
+        shuttlecock.rotation.y += 0.005;
+    }
+
+    renderer.render(scene, camera);
+}
+
+// 窗口大小自适应
+window.addEventListener('resize', () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+// 执行
+createShuttlecock();
+createGroundRings();
+animate();
+setupHands();
+
+</script>
+</body>
+</html>
